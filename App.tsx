@@ -12,11 +12,14 @@ import {
   Alert,
   ScrollView,
 } from 'react-native';
-import { Search, Droplet, Flame, ShieldAlert, MapPin, Heart, SlidersHorizontal } from 'lucide-react-native';
+import { Search, Droplet, Flame, ShieldAlert, MapPin, Heart, SlidersHorizontal, Map as MapIcon } from 'lucide-react-native';
 import { SAMPLE_PLACES } from './data/places';
 import type { CampingPlace } from './data/places';
 import PlaceDetailModal from './components/PlaceDetailModal';
+import PlacesMap from './components/PlacesMap';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Location from 'expo-location';
+import { calculateDistance } from './utils/distance';
 
 const FAVORITES_STORAGE_KEY = '@camping-sri-lanka/favorite-place-ids';
 type TriState = 'Any' | 'Yes' | 'No';
@@ -29,6 +32,8 @@ const matchesBoolean = (value: boolean, choice: TriState) =>
 
 export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<'default' | 'name' | 'difficulty'>('default');
+  const [showMap, setShowMap] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [selectedPlace, setSelectedPlace] = useState<CampingPlace | null>(null);
   const [favoriteIds, setFavoriteIds] = useState<string[]>([]);
@@ -40,6 +45,44 @@ export default function App() {
   const [campfireFilter, setCampfireFilter] = useState<TriState>('Any');
   const [vehicleFilter, setVehicleFilter] = useState<TriState>('Any');
   const [permitFilter, setPermitFilter] = useState<TriState>('Any');
+  const [userLocation, setUserLocation] = useState<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
+
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [nearbyOnly, setNearbyOnly] = useState(false);
+
+  const [nearbyRadius, setNearbyRadius] = useState(50);
+
+  const getMyLocation = async () => {
+    try {
+      setLocationLoading(true);
+
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Permission Denied',
+          'Please allow location access to find nearby camping places.'
+        );
+        return;
+      }
+
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+
+      setUserLocation({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+      });
+    } catch (error) {
+      console.error('Location error:', error);
+      Alert.alert('Location Error', 'Unable to get your current location.');
+    } finally {
+      setLocationLoading(false);
+    }
+  };
 
   // Load saved IDs only once when the app starts.
   useEffect(() => {
@@ -141,6 +184,49 @@ export default function App() {
     return matchesSearch && matchesCategory && matchesDifficulty && matchesFacilities && matchesFavorites;
   });
 
+  // Sort a copy to avoid modifying original data.
+  const sortedPlaces = [...filteredPlaces].sort((a, b) => {
+    if (sortBy === 'name') return a.name.localeCompare(b.name);
+    if (sortBy === 'difficulty') {
+      const order = { Easy: 1, Moderate: 2, Hard: 3 };
+      return order[a.difficulty] - order[b.difficulty];
+    }
+    return 0;
+  });
+
+  const nearbyPlaces = userLocation
+    ? [...sortedPlaces].sort((a, b) => {
+      const distanceA = calculateDistance(
+        userLocation.latitude,
+        userLocation.longitude,
+        a.coordinates.latitude,
+        a.coordinates.longitude
+      );
+
+      const distanceB = calculateDistance(
+        userLocation.latitude,
+        userLocation.longitude,
+        b.coordinates.latitude,
+        b.coordinates.longitude
+      );
+
+      return distanceA - distanceB;
+    })
+    : sortedPlaces;
+
+  const displayedPlaces = nearbyOnly && userLocation
+  ? nearbyPlaces.filter((place: CampingPlace) => {
+      const distance = calculateDistance(
+        userLocation.latitude,
+        userLocation.longitude,
+        place.coordinates.latitude,
+        place.coordinates.longitude
+      );
+
+      return distance <= nearbyRadius;
+    })
+  : sortedPlaces;
+
   const categories = ['All', 'Camping', 'Hiking', 'Viewpoint'];
 
   // Single Location Card Component
@@ -167,12 +253,6 @@ export default function App() {
         />
       </TouchableOpacity>
 
-      <TouchableOpacity
-        onPress={() => setShowAdvancedFilters(!showAdvancedFilters)}
-      >
-      <Text>Advanced Filters</Text>
-      </TouchableOpacity>
-
       {/* Badge for Difficulty */}
       <View style={styles.badgeContainer}>
         <Text style={styles.badgeText}>{item.difficulty}</Text>
@@ -184,6 +264,17 @@ export default function App() {
         <View style={styles.locationRow}>
           <MapPin size={14} color="#666" />
           <Text style={styles.districtName}>{item.district} District</Text>
+
+          {userLocation && (
+  <Text style={{ color: '#15803d', marginTop: 5 }}>
+    📍 {calculateDistance(
+      userLocation.latitude,
+      userLocation.longitude,
+      item.coordinates.latitude,
+      item.coordinates.longitude
+    ).toFixed(1)} km away
+  </Text>
+)}
         </View>
 
         {/* Quick Amenities Icons */}
@@ -217,7 +308,7 @@ export default function App() {
       
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>CAMPING SRI LANKA</Text>
+        <Text style={styles.headerTitle}>TRAVELLER</Text>
         <Text style={styles.headerSubtitle}>Find your next adventure</Text>
       </View>
 
@@ -296,14 +387,105 @@ export default function App() {
         )}
       </View>
       <Text style={styles.matchCount}>{filteredPlaces.length} place{filteredPlaces.length === 1 ? '' : 's'} found</Text>
-      {showAdvancedFilters && (
-        <View>
-        <Text>Advanced Filters Options</Text>
-        </View>
+
+      {/* Sort and optional map preview. The list remains scrollable. */}
+      <View style={styles.listToolbar}>
+        {(['default', 'name', 'difficulty'] as const).map((option) => (
+          <TouchableOpacity
+            key={option}
+            style={[styles.sortButton, sortBy === option && styles.sortButtonActive]}
+            onPress={() => setSortBy(option)}
+            accessibilityRole="button"
+          >
+            <Text style={[styles.sortText, sortBy === option && styles.sortTextActive]}>
+              {option === 'default' ? 'Default' : option === 'name' ? 'A–Z' : 'Difficulty'}
+            </Text>
+          </TouchableOpacity>
+        ))}
+        <TouchableOpacity
+          style={[styles.mapToggle, showMap && styles.mapToggleActive]}
+          onPress={() => setShowMap((value) => !value)}
+          accessibilityRole="button"
+        >
+          <MapIcon size={17} color={showMap ? '#ffffff' : '#166534'} />
+          <Text style={[styles.mapToggleText, showMap && styles.sortTextActive]}>Map</Text>
+        </TouchableOpacity>
+      </View>
+      <TouchableOpacity
+      onPress={getMyLocation}
+      disabled={locationLoading}
+      style={{
+        backgroundColor: '#15803d',
+        padding: 12,
+        borderRadius: 12,
+        alignItems: 'center',
+        marginVertical: 10,
+        opacity: locationLoading ? 0.6 : 1,
+  }}
+>
+  <Text style={{ color: '#fff', fontWeight: '700' }}>
+    {locationLoading ? 'Getting Location...' : '📍 Find My Location'}
+  </Text>
+</TouchableOpacity>
+
+<TouchableOpacity
+  disabled={!userLocation}
+  onPress={() => setNearbyOnly(previous => !previous)}
+  style={{
+    backgroundColor: nearbyOnly ? '#166534' : '#e2e8f0',
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginVertical: 8,
+    opacity: userLocation ? 1 : 0.5,
+  }}
+>
+  <Text
+    style={{
+      color: nearbyOnly ? '#ffffff' : '#334155',
+      fontWeight: '700',
+    }}
+  >
+    {nearbyOnly ? '✓ Nearby Places' : '📍 Near Me'}
+  </Text>
+</TouchableOpacity>
+{nearbyOnly && (
+  <View style={{ flexDirection: 'row', gap: 10, marginVertical: 10 }}>
+    {[25, 50, 100, 200].map(radius => (
+      <TouchableOpacity
+        key={radius}
+        onPress={() => setNearbyRadius(radius)}
+        style={{
+          padding: 10,
+          borderRadius: 10,
+          backgroundColor:
+            nearbyRadius === radius ? '#15803d' : '#e2e8f0',
+        }}
+      >
+        <Text
+          style={{
+            color: nearbyRadius === radius ? '#fff' : '#334155',
+          }}
+        >
+          {radius} km
+        </Text>
+      </TouchableOpacity>
+    ))}
+  </View>
 )}
+
       {/* Locations List */}
       <FlatList
-        data={filteredPlaces}
+        data={displayedPlaces}
+        ListHeaderComponent={showMap ? (
+          <View style={styles.mapPanel}>
+            <PlacesMap
+              places={displayedPlaces}
+              onSelectPlace={setSelectedPlace}
+              userLocation={userLocation}
+            />
+          </View>
+        ) : undefined}
         keyExtractor={(item) => item.id}
         renderItem={renderPlaceCard}
         contentContainerStyle={styles.listContent}
@@ -404,6 +586,61 @@ const styles = StyleSheet.create({
   resetButton: { paddingVertical: 12, alignItems: 'center', marginBottom: 10, borderRadius: 10, backgroundColor: '#f1f5f9' },
   resetButtonText: { color: '#166534', fontWeight: '700', fontSize: 13 },
   matchCount: { marginHorizontal: 20, marginBottom: 8, fontSize: 12, color: '#64748b' },
+  listToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 20,
+    marginBottom: 8,
+    gap: 8,
+  },
+  sortButton: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    backgroundColor: '#f0fdf4',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  sortButtonActive: {
+    backgroundColor: '#15803d',
+    borderColor: '#15803d',
+  },
+  sortText: {
+    color: '#166534',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  sortTextActive: {
+    color: '#ffffff',
+  },
+  mapToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    backgroundColor: '#f0fdf4',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  mapToggleActive: {
+    backgroundColor: '#15803d',
+    borderColor: '#15803d',
+  },
+  mapToggleText: {
+    color: '#166534',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  mapPanel: {
+    height: 230,
+    marginBottom: 14,
+    overflow: 'hidden',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
   listContent: {
     paddingHorizontal: 20,
     paddingBottom: 20,
