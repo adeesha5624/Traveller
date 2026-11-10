@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import {
-  StyleSheet,
   Text,
   View,
   TextInput,
@@ -20,14 +19,30 @@ import PlacesMap from './components/PlacesMap';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { calculateDistance } from './utils/distance';
+import { fetchPlaces } from './services/api';
+import type { DatabasePlace } from './services/api';
+
+import { styles } from './styles/appStyles';
 
 const FAVORITES_STORAGE_KEY = '@camping-sri-lanka/favorite-place-ids';
 type TriState = 'Any' | 'Yes' | 'No';
 type DifficultyChoice = 'Any' | CampingPlace['difficulty'];
 
 // A three-way filter supports Yes, No, or no restriction.
-const matchesBoolean = (value: boolean, choice: TriState) =>
-  choice === 'Any' || (choice === 'Yes' ? value : !value);
+const matchesBoolean = (
+  value: boolean | null,
+  filter: string
+): boolean => {
+  if (filter === 'Any') return true;
+
+  if (value === null) return false;
+
+  if (filter === 'Yes') return value === true;
+
+  if (filter === 'No') return value === false;
+
+  return false;
+};
 
 
 export default function App() {
@@ -52,37 +67,66 @@ export default function App() {
 
   const [locationLoading, setLocationLoading] = useState(false);
   const [nearbyOnly, setNearbyOnly] = useState(false);
-
   const [nearbyRadius, setNearbyRadius] = useState(50);
+  const [databasePlaces, setDatabasePlaces] = useState<DatabasePlace[]>([]);
+  const [placesLoading, setPlacesLoading] = useState(true);
+  const [placesError, setPlacesError] = useState<string | null>(null);
 
+  // Load cloud records once on mount, independently from GPS access.
+  useEffect(() => {
+    let active = true;
+
+    async function loadPlaces() {
+      try {
+        setPlacesLoading(true);
+        setPlacesError(null);
+        const data = await fetchPlaces();
+        if (active) setDatabasePlaces(data);
+        console.log('PostgreSQL Places:', data);
+      } catch (error) {
+        console.error('API Error:', error);
+        if (active) setPlacesError('Unable to load locations from the backend. Showing demo places.');
+      } finally {
+        if (active) setPlacesLoading(false);
+      }
+    }
+
+    loadPlaces();
+    return () => { active = false; };
+  }, []);
+
+  // Find My Location must request GPS, not fetch places again.
   const getMyLocation = async () => {
     try {
       setLocationLoading(true);
-
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert(
-          'Permission Denied',
-          'Please allow location access to find nearby camping places.'
-        );
+        Alert.alert('Location permission', 'Allow location access to find nearby places.');
         return;
       }
 
       const position = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High,
       });
-
       setUserLocation({
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
       });
+      setShowMap(true);
+      console.log('My GPS Location:', position.coords.latitude, position.coords.longitude);
     } catch (error) {
-      console.error('Location error:', error);
-      Alert.alert('Location Error', 'Unable to get your current location.');
+      console.error('GPS Error:', error);
+      Alert.alert('Location error', 'Could not get your current location. Try again.');
     } finally {
       setLocationLoading(false);
     }
   };
+
+  // Cloud records are primary. Demo records are used only when the API fails.
+  // An empty successful response means the database has no places yet.
+  const allPlaces: CampingPlace[] = placesError
+    ? SAMPLE_PLACES
+    : databasePlaces;
 
   // Load saved IDs only once when the app starts.
   useEffect(() => {
@@ -166,7 +210,7 @@ export default function App() {
   );
 
   // Search filter function
-  const filteredPlaces = SAMPLE_PLACES.filter((place) => {
+  const filteredPlaces = allPlaces.filter((place) => {
     const matchesSearch =
       place.district.toLowerCase().includes(searchQuery.toLowerCase()) ||
       place.name.toLowerCase().includes(searchQuery.toLowerCase());
@@ -215,7 +259,7 @@ export default function App() {
     : sortedPlaces;
 
   const displayedPlaces = nearbyOnly && userLocation
-  ? nearbyPlaces.filter((place: CampingPlace) => {
+  ? nearbyPlaces.filter((place) => {
       const distance = calculateDistance(
         userLocation.latitude,
         userLocation.longitude,
@@ -236,7 +280,28 @@ export default function App() {
       activeOpacity={0.8}
       onPress={() => setSelectedPlace(item)}
     >
-      <Image source={{ uri: item.image }} style={styles.cardImage} />
+      {item.image ? (
+  <Image
+    source={{ uri: item.image }}
+    style={styles.cardImage}
+    resizeMode="cover"
+  />
+) : (
+  <View
+    style={[
+      styles.cardImage,
+      {
+        backgroundColor: '#e2e8f0',
+        justifyContent: 'center',
+        alignItems: 'center',
+      },
+    ]}
+  >
+    <Text style={{ color: '#64748b' }}>
+      Photo coming soon
+    </Text>
+  </View>
+)}
       
       {/* Heart button works independently from the card's onPress. */}
       <TouchableOpacity
@@ -386,7 +451,7 @@ export default function App() {
           </ScrollView>
         )}
       </View>
-      <Text style={styles.matchCount}>{filteredPlaces.length} place{filteredPlaces.length === 1 ? '' : 's'} found</Text>
+      <Text style={styles.matchCount}>{displayedPlaces.length} place{displayedPlaces.length === 1 ? '' : 's'} found</Text>
 
       {/* Sort and optional map preview. The list remains scrollable. */}
       <View style={styles.listToolbar}>
@@ -432,7 +497,7 @@ export default function App() {
   disabled={!userLocation}
   onPress={() => setNearbyOnly(previous => !previous)}
   style={{
-    backgroundColor: nearbyOnly ? '#166534' : '#e2e8f0',
+    backgroundColor: nearbyOnly ? '#2cc366' : '#e2e8f0',
     padding: 14,
     borderRadius: 12,
     alignItems: 'center',
@@ -472,7 +537,20 @@ export default function App() {
       </TouchableOpacity>
     ))}
   </View>
+
 )}
+
+      {/* API loading / failure status; avoid duplicate database preview cards. */}
+      {placesLoading && (
+        <Text style={{ textAlign: 'center', marginVertical: 8, color: '#64748b' }}>
+          Loading locations...
+        </Text>
+      )}
+      {placesError && (
+        <Text style={{ textAlign: 'center', marginVertical: 8, color: '#b45309' }}>
+          {placesError}
+        </Text>
+      )}
 
       {/* Locations List */}
       <FlatList
@@ -508,228 +586,3 @@ export default function App() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8fafc',
-  },
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 15,
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#0f172a',
-    letterSpacing: 1,
-  },
-  headerSubtitle: {
-    fontSize: 14,
-    color: '#64748b',
-    marginTop: 2,
-  },
-  searchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    marginHorizontal: 20,
-    paddingHorizontal: 15,
-    borderRadius: 12,
-    height: 50,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  searchIcon: {
-    marginRight: 10,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 15,
-    color: '#0f172a',
-  },
-  categoryContainer: {
-    flexDirection: 'row',
-    paddingHorizontal: 20,
-    marginVertical: 15,
-  },
-  categoryChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#e2e8f0',
-    marginRight: 10,
-  },
-  activeCategoryChip: {
-    backgroundColor: '#15803d',
-  },
-  categoryText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#475569',
-  },
-  activeCategoryText: {
-    color: '#fff',
-  },
-  filterSection: { marginHorizontal: 20, marginBottom: 8 },
-  filterToggle: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#dcfce7', paddingHorizontal: 14, paddingVertical: 12, borderRadius: 12 },
-  filterToggleText: { flex: 1, color: '#166534', fontSize: 14, fontWeight: '700' },
-  filterToggleHint: { color: '#166534', fontSize: 12, fontWeight: '600' },
-  filtersPanel: { maxHeight: 310, marginTop: 8, borderRadius: 12, backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#e2e8f0', padding: 12 },
-  filterGroup: { marginBottom: 14 },
-  filterLabel: { fontSize: 13, fontWeight: '700', color: '#334155', marginBottom: 8 },
-  filterChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  filterChip: { borderRadius: 18, borderWidth: 1, borderColor: '#cbd5e1', backgroundColor: '#f8fafc', paddingHorizontal: 12, paddingVertical: 7 },
-  filterChipActive: { backgroundColor: '#15803d', borderColor: '#15803d' },
-  filterChipText: { color: '#334155', fontSize: 12, fontWeight: '600' },
-  filterChipTextActive: { color: '#ffffff' },
-  resetButton: { paddingVertical: 12, alignItems: 'center', marginBottom: 10, borderRadius: 10, backgroundColor: '#f1f5f9' },
-  resetButtonText: { color: '#166534', fontWeight: '700', fontSize: 13 },
-  matchCount: { marginHorizontal: 20, marginBottom: 8, fontSize: 12, color: '#64748b' },
-  listToolbar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginHorizontal: 20,
-    marginBottom: 8,
-    gap: 8,
-  },
-  sortButton: {
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#bbf7d0',
-    backgroundColor: '#f0fdf4',
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  sortButtonActive: {
-    backgroundColor: '#15803d',
-    borderColor: '#15803d',
-  },
-  sortText: {
-    color: '#166534',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  sortTextActive: {
-    color: '#ffffff',
-  },
-  mapToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#bbf7d0',
-    backgroundColor: '#f0fdf4',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  mapToggleActive: {
-    backgroundColor: '#15803d',
-    borderColor: '#15803d',
-  },
-  mapToggleText: {
-    color: '#166534',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  mapPanel: {
-    height: 230,
-    marginBottom: 14,
-    overflow: 'hidden',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  listContent: {
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-  },
-  card: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    marginBottom: 16,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  cardImage: {
-    width: '100%',
-    height: 160,
-  },
-  favoriteHeart: {
-    position: 'absolute', top: 12, left: 12, zIndex: 2,
-    backgroundColor: '#ffffff', borderRadius: 24,
-    width: 40, height: 40, alignItems: 'center', justifyContent: 'center',
-  },
-  favoritesToggle: {
-    alignSelf: 'flex-start', marginHorizontal: 20, marginBottom: 12,
-    paddingVertical: 10, paddingHorizontal: 14, borderRadius: 22,
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: '#fff1f2',
-  },
-  favoritesToggleActive: { backgroundColor: '#15803d' },
-  favoritesToggleText: { color: '#9f1239', fontWeight: '700' },
-  favoritesToggleTextActive: { color: '#ffffff' },
-  badgeContainer: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-    backgroundColor: 'rgba(15, 23, 42, 0.75)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  badgeText: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  cardDetails: {
-    padding: 14,
-  },
-  placeName: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#0f172a',
-  },
-  locationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  districtName: {
-    fontSize: 13,
-    color: '#64748b',
-    marginLeft: 4,
-  },
-  iconRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginTop: 10,
-  },
-  iconBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f1f5f9',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    marginRight: 8,
-    marginBottom: 4,
-  },
-  iconText: {
-    fontSize: 11,
-    color: '#334155',
-    fontWeight: '500',
-    marginLeft: 4,
-  },
-  emptyContainer: {
-    alignItems: 'center',
-    marginTop: 40,
-  },
-  emptyText: {
-    color: '#94a3b8',
-    fontSize: 14,
-  },
-});

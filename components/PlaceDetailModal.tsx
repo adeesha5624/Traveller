@@ -55,7 +55,28 @@ export default function PlaceDetailModal({ place, visible, onClose, isFavorite, 
       <SafeAreaView style={styles.container}>
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
           <View style={styles.imageContainer}>
-            <Image source={{ uri: place.image }} style={styles.image} />
+            {place.image ? (
+  <Image
+    source={{ uri: place.image }}
+    style={styles.image}
+    resizeMode="cover"
+  />
+) : (
+  <View
+    style={[
+      styles.image,
+      {
+        backgroundColor: '#e2e8f0',
+        justifyContent: 'center',
+        alignItems: 'center',
+      },
+    ]}
+  >
+    <Text style={{ color: '#64748b' }}>
+      Photo coming soon
+    </Text>
+  </View>
+)}
             <TouchableOpacity
               style={styles.modalHeart}
               onPress={onToggleFavorite}
