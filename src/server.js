@@ -1,7 +1,13 @@
 
 const express = require('express');
 const cors = require('cors');
+const authRoutes = require('./routes/auth.routes');
 require('dotenv').config();
+
+const {
+  authenticate,
+  requireAdmin
+} = require('./middleware/auth.middleware');
 
 const pool = require('./db');
 
@@ -11,6 +17,7 @@ const app = express();
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use('/api/auth', authRoutes);
 
 // Test API
 app.get('/', (req, res) => {
@@ -72,7 +79,7 @@ app.get('/api/places', async (req, res) => {
 });
 
 
-app.post('/api/places', async (req, res) => {
+app.post('/api/places',authenticate, requireAdmin, async (req, res) => {
   try {
     const {
       id,
@@ -131,7 +138,7 @@ app.post('/api/places', async (req, res) => {
 });
 
 
-app.put('/api/places/:id', async (req, res) => {
+app.put('/api/places/:id',authenticate, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -206,7 +213,7 @@ app.put('/api/places/:id', async (req, res) => {
 });
 
 
-app.delete('/api/places/:id', async (req, res) => {
+app.delete('/api/places/:id',authenticate, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -233,6 +240,41 @@ app.delete('/api/places/:id', async (req, res) => {
 
     return res.status(500).json({
       message: 'Failed to delete place'
+    });
+  }
+});
+
+
+app.get('/api/listings', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        l.id,
+        l.title,
+        l.description,
+        l.category,
+        l.listing_type AS "listingType",
+        l.price,
+        l.price_unit AS "priceUnit",
+        l.district,
+        l.image_url AS "imageUrl",
+        p.business_name AS "providerName",
+        p.phone_number AS "phoneNumber",
+        p.whatsapp_number AS "whatsappNumber"
+      FROM public.listings l
+      JOIN public.provider_profiles p
+        ON p.id = l.provider_id
+      WHERE l.approval_status = 'approved'
+        AND p.approval_status = 'approved'
+        AND l.is_available = TRUE
+      ORDER BY l.created_at DESC
+    `);
+
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error('Listings API error:', error);
+    res.status(500).json({
+      message: 'Unable to load listings'
     });
   }
 });
