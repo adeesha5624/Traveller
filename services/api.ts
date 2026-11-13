@@ -1,4 +1,4 @@
-const API_URL = 'http://172.20.10.2:5050';
+const API_URL = 'http://172.20.10.3:5050';
 
 export interface DatabasePlace {
   id: string;
